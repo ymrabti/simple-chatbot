@@ -1,0 +1,43 @@
+.chat-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.messages {
+  flex: 1;
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.user {
+  text-align: right;
+  margin: 8px;
+  background: #007bff;
+  color: white;
+  padding: 10px;
+  border-radius: 10px;
+}
+
+.assistant {
+  text-align: left;
+  margin: 8px;
+  background: #f1f1f1;
+  padding: 10px;
+  border-radius: 10px;
+}
+
+.input-box {
+  display: flex;
+  padding: 10px;
+  border-top: 1px solid #ccc;
+}
+
+input {
+  flex: 1;
+  padding: 10px;
+}
+
+button {
+  margin-left: 10px;
+}
