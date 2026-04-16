@@ -2,13 +2,15 @@ import { Component, OnInit } from '@angular/core';
 import { ChatService } from '../services/chat';
 import { Message } from '../models/message.model';
 import { CommonModule } from '@angular/common';
-import { BrowserModule } from '@angular/platform-browser';
+import { FormsModule } from '@angular/forms';
+import { HttpClient, provideHttpClient } from '@angular/common/http';
 
 @Component({
   selector: 'app-chat',
-  imports: [CommonModule, BrowserModule],
+  imports: [CommonModule, FormsModule],
   templateUrl: './chat.html',
   styleUrls: ['./chat.scss'],
+  providers: [HttpClient],
 })
 export class ChatComponent implements OnInit {
   sessionId!: string;
