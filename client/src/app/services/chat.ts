@@ -15,7 +15,7 @@ export class ChatService {
   }
 
   sendMessage(sessionId: string, message: string): Observable<any> {
-    return this.http.post(`${this.API}/chat`, {
+    return this.http.post(`${this.API}/chat-stream`, {
       sessionId,
       message,
     });

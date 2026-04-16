@@ -11,74 +11,18 @@ app.use(cors());
 // CONFIG
 // =======================
 const OLLAMA_URL = "http://localhost:11434/api/generate";
-const EMBEDDING_URL = "http://localhost:8000/embed";
 const MODEL = "qwen:7b";
 
 // =======================
-// MEMORY STORE
+// MEMORY STORE (simple + fast)
 // =======================
 const sessions = {};
 
 // structure:
 // sessions[id] = {
 //   messages: [],
-//   summary: "",
-//   vectors: [{ text, vector }]
+//   summary: ""
 // }
-
-// =======================
-// EMBEDDINGS
-// =======================
-async function embed(text) {
-    const res = await axios.post(EMBEDDING_URL, {
-        texts: [text],
-    });
-    return res.data.embeddings[0];
-}
-
-// cosine similarity
-function cosine(a, b) {
-    let dot = 0,
-        normA = 0,
-        normB = 0;
-
-    for (let i = 0; i < a.length; i++) {
-        dot += a[i] * b[i];
-        normA += a[i] ** 2;
-        normB += b[i] ** 2;
-    }
-
-    return dot / (Math.sqrt(normA) * Math.sqrt(normB));
-}
-
-// =======================
-// VECTOR MEMORY
-// =======================
-async function storeVector(sessionId, text) {
-    if (!sessions[sessionId]) return;
-
-    const vector = await embed(text);
-
-    sessions[sessionId].vectors.push({
-        text,
-        vector,
-    });
-}
-
-async function recall(sessionId, query, k = 3) {
-    if (!sessions[sessionId]) return [];
-
-    const queryVec = await embed(query);
-
-    return sessions[sessionId].vectors
-        .map((v) => ({
-            text: v.text,
-            score: cosine(queryVec, v.vector),
-        }))
-        .sort((a, b) => b.score - a.score)
-        .slice(0, k)
-        .map((v) => v.text);
-}
 
 // =======================
 // SUMMARIZATION
@@ -92,11 +36,16 @@ You are a memory compression system.
 Existing summary:
 ${oldSummary}
 
-New messages:
+New conversation:
 ${history}
 
-Update the summary with key facts, preferences, identity, and important context.
-Keep it short but informative.
+Update a short memory summary containing:
+- user identity
+- preferences
+- important facts
+- context
+
+Keep it concise.
 `;
 
     const res = await axios.post(OLLAMA_URL, {
@@ -109,34 +58,21 @@ Keep it short but informative.
 }
 
 // =======================
-// SESSION MANAGEMENT
+// SESSION
 // =======================
 app.post("/session", (req, res) => {
-    const id = uuidv4();
+    const sessionId = uuidv4();
 
-    sessions[id] = {
+    sessions[sessionId] = {
         messages: [],
         summary: "",
-        vectors: [],
     };
 
-    res.json({ sessionId: id });
-});
-
-app.get("/session/:id", (req, res) => {
-    const session = sessions[req.params.id];
-    if (!session) return res.status(404).json({ error: "Not found" });
-
-    res.json(session);
-});
-
-app.delete("/session/:id", (req, res) => {
-    delete sessions[req.params.id];
-    res.json({ status: "deleted" });
+    res.json({ sessionId });
 });
 
 // =======================
-// CHAT ENDPOINT (CORE)
+// CHAT ENDPOINT
 // =======================
 const MAX_MESSAGES = 6;
 
@@ -151,15 +87,12 @@ app.post("/chat", async (req, res) => {
         const session = sessions[sessionId];
 
         // 1. store user message
-        session.messages.push({ role: "user", content: message });
+        session.messages.push({
+            role: "user",
+            content: message,
+        });
 
-        // 2. vector memory store
-        await storeVector(sessionId, message);
-
-        // 3. recall relevant memories
-        const memories = await recall(sessionId, message);
-
-        // 4. summarization trigger
+        // 2. summarize if needed
         if (session.messages.length > MAX_MESSAGES) {
             session.summary = await summarize(
                 session.messages,
@@ -168,24 +101,24 @@ app.post("/chat", async (req, res) => {
             session.messages = session.messages.slice(-2);
         }
 
-        // 5. build prompt
+        // 3. build prompt
+        const recent = session.messages
+            .map((m) => `${m.role}: ${m.content}`)
+            .join("\n");
+
         const prompt = `
 You are a helpful assistant.
 
-Long-term summary:
+Memory summary:
 ${session.summary}
 
-Relevant past memories:
-${memories.join("\n")}
-
 Recent conversation:
-${session.messages.map((m) => `${m.role}: ${m.content}`).join("\n")}
+${recent}
 
-user: ${message}
 assistant:
 `;
 
-        // 6. call LLM
+        // 4. call Qwen 7B
         const response = await axios.post(OLLAMA_URL, {
             model: MODEL,
             prompt,
@@ -194,23 +127,24 @@ assistant:
 
         const reply = response.data.response;
 
-        // 7. store assistant reply
-        session.messages.push({ role: "assistant", content: reply });
-        await storeVector(sessionId, reply);
+        // 5. store assistant response
+        session.messages.push({
+            role: "assistant",
+            content: reply,
+        });
 
         res.json({
             response: reply,
             summary: session.summary,
-            memoriesUsed: memories,
         });
     } catch (err) {
-        console.error(err);
+        console.error(err.message);
         res.status(500).json({ error: "Chat failed" });
     }
 });
 
 // =======================
-// STREAMING CHAT
+// OPTIONAL: STREAMING
 // =======================
 app.post("/chat-stream", async (req, res) => {
     try {
@@ -222,17 +156,16 @@ app.post("/chat-stream", async (req, res) => {
 
         session.messages.push({ role: "user", content: message });
 
-        const memories = await recall(sessionId, message);
+        const recent = session.messages
+            .map((m) => `${m.role}: ${m.content}`)
+            .join("\n");
 
         const prompt = `
-Summary:
+Memory:
 ${session.summary}
 
-Memories:
-${memories.join("\n")}
-
 Recent:
-${session.messages.map((m) => `${m.role}: ${m.content}`).join("\n")}
+${recent}
 
 assistant:
 `;
@@ -266,10 +199,11 @@ assistant:
             }
         });
 
-        response.data.on("end", async () => {
-            session.messages.push({ role: "assistant", content: fullReply });
-
-            await storeVector(sessionId, fullReply);
+        response.data.on("end", () => {
+            session.messages.push({
+                role: "assistant",
+                content: fullReply,
+            });
 
             res.end();
         });
@@ -280,16 +214,21 @@ assistant:
 });
 
 // =======================
-// HEALTH CHECK
+// SESSION DEBUG
 // =======================
-app.get("/health", (req, res) => {
-    res.json({
-        status: "OK",
-        sessions: Object.keys(sessions).length,
-    });
+app.get("/session/:id", (req, res) => {
+    const session = sessions[req.params.id];
+    if (!session) return res.status(404).json({ error: "Not found" });
+
+    res.json(session);
+});
+
+app.delete("/session/:id", (req, res) => {
+    delete sessions[req.params.id];
+    res.json({ status: "deleted" });
 });
 
 // =======================
 app.listen(3000, () => {
-    console.log("🚀 Full AI Server running on http://localhost:3000");
+    console.log("🚀 Simple Qwen Chat Server running on http://localhost:3000");
 });
