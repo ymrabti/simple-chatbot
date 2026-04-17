@@ -1,12 +1,15 @@
 const express = require("express");
 const axios = require("axios");
 const cors = require("cors");
+const mongoose = require("mongoose");
 const { v4: uuidv4 } = require("uuid");
 
+const ChatSession = require("./models/ChatSession");
 const app = express();
 app.use(express.json());
 app.use(cors());
 
+const MAX_MESSAGES = 6;
 // =======================
 // CONFIG
 // =======================
@@ -17,12 +20,6 @@ const MODEL = "qwen:7b";
 // MEMORY STORE (simple + fast)
 // =======================
 const sessions = {};
-
-// structure:
-// sessions[id] = {
-//   messages: [],
-//   summary: ""
-// }
 
 // =======================
 // SUMMARIZATION
@@ -57,25 +54,171 @@ Keep it concise.
     return res.data.response;
 }
 
-// =======================
-// SESSION
-// =======================
-app.post("/session", (req, res) => {
-    const sessionId = uuidv4();
+// ======================
+// DB CONNECT
+// ======================
+mongoose.connect("mongodb://localhost:27017/chatapp");
 
-    sessions[sessionId] = {
-        messages: [],
-        summary: "",
-    };
+// ======================
+// CREATE SESSION
+// ======================
+app.post("/session", async (req, res) => {
+  const session = await ChatSession.create({
+    title: "New Chat"
+  });
 
-    res.json({ sessionId });
+  res.json(session);
 });
+
+// ======================
+// GET ALL SESSIONS
+// ======================
+app.get("/sessions", async (req, res) => {
+  const sessions = await ChatSession.find().sort({ updatedAt: -1 });
+  res.json(sessions);
+});
+
+// ======================
+// GET SINGLE SESSION
+// ======================
+app.get("/session/:id", async (req, res) => {
+  const session = await ChatSession.findById(req.params.id);
+  res.json(session);
+});
+
+// ======================
+// CHAT STREAM
+// ======================
+app.post("/chat-stream", async (req, res) => {
+  const { sessionId, message } = req.body;
+
+  const session = await ChatSession.findById(sessionId);
+  if (!session) return res.status(404).json({ error: "not found" });
+
+  session.messages.push({ role: "user", content: message });
+
+  const prompt = `
+${session.summary}
+
+${session.messages.map(m => `${m.role}: ${m.content}`).join("\n")}
+
+assistant:
+`;
+
+  const response = await axios({
+    method: "POST",
+    url: OLLAMA_URL,
+    data: { model: MODEL, prompt, stream: true },
+    responseType: "stream"
+  });
+
+  res.setHeader("Content-Type", "text/plain");
+
+  let full = "";
+
+  response.data.on("data", chunk => {
+    const lines = chunk.toString().split("\n").filter(Boolean);
+
+    for (const line of lines) {
+      try {
+        const json = JSON.parse(line);
+        if (json.response) {
+          full += json.response;
+          res.write(json.response);
+        }
+      } catch {}
+    }
+  });
+
+  response.data.on("end", async () => {
+    session.messages.push({ role: "assistant", content: full });
+
+    // keep last context small
+    if (session.messages.length > 20) {
+      session.messages = session.messages.slice(-20);
+    }
+
+    session.updatedAt = new Date();
+    await session.save();
+
+    res.end();
+  });
+});
+
+// =======================
+// OPTIONAL: STREAMING
+// =======================
+/* app.post("/chat-stream", async (req, res) => {
+    try {
+        const { sessionId, message } = req.body;
+
+        const session = sessions[sessionId];
+        if (!session)
+            return res.status(400).json({ error: "Invalid sessionId" });
+
+        session.messages.push({ role: "user", content: message });
+
+        const recent = session.messages
+            .map((m) => `${m.role}: ${m.content}`)
+            .join("\n");
+
+        const prompt = `
+Memory:
+${session.summary}
+
+Recent:
+${recent}
+
+assistant:
+`;
+
+        const response = await axios({
+            method: "POST",
+            url: OLLAMA_URL,
+            data: {
+                model: MODEL,
+                prompt,
+                stream: true,
+            },
+            responseType: "stream",
+        });
+
+        res.setHeader("Content-Type", "text/plain");
+
+        let fullReply = "";
+
+        response.data.on("data", (chunk) => {
+            const lines = chunk.toString().split("\n").filter(Boolean);
+
+            for (const line of lines) {
+                try {
+                    console.log(line);
+                    const json = JSON.parse(line);
+                    if (json.response) {
+                        fullReply += json.response;
+                        res.write(json.response);
+                    }
+                } catch {}
+            }
+        });
+
+        response.data.on("end", () => {
+            session.messages.push({
+                role: "assistant",
+                content: fullReply,
+            });
+
+            res.end();
+        });
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).json({ error: "Stream failed" });
+    }
+}); */
 
 // =======================
 // CHAT ENDPOINT
 // =======================
-const MAX_MESSAGES = 6;
-
 app.post("/chat", async (req, res) => {
     try {
         const { sessionId, message } = req.body;
@@ -141,91 +284,6 @@ assistant:
         console.error(err.message);
         res.status(500).json({ error: "Chat failed" });
     }
-});
-
-// =======================
-// OPTIONAL: STREAMING
-// =======================
-app.post("/chat-stream", async (req, res) => {
-    try {
-        const { sessionId, message } = req.body;
-
-        const session = sessions[sessionId];
-        if (!session)
-            return res.status(400).json({ error: "Invalid sessionId" });
-
-        session.messages.push({ role: "user", content: message });
-
-        const recent = session.messages
-            .map((m) => `${m.role}: ${m.content}`)
-            .join("\n");
-
-        const prompt = `
-Memory:
-${session.summary}
-
-Recent:
-${recent}
-
-assistant:
-`;
-
-        const response = await axios({
-            method: "POST",
-            url: OLLAMA_URL,
-            data: {
-                model: MODEL,
-                prompt,
-                stream: true,
-            },
-            responseType: "stream",
-        });
-
-        res.setHeader("Content-Type", "text/plain");
-
-        let fullReply = "";
-
-        response.data.on("data", (chunk) => {
-            const lines = chunk.toString().split("\n").filter(Boolean);
-
-            for (const line of lines) {
-                try {
-                    const json = JSON.parse(line);
-                    if (json.response) {
-                        fullReply += json.response;
-                        res.write(json.response);
-                    }
-                } catch {}
-            }
-        });
-
-        response.data.on("end", () => {
-            session.messages.push({
-                role: "assistant",
-                content: fullReply,
-            });
-
-            res.end();
-        });
-    } catch (err) {
-        console.error(err.message);
-        res.status(500).json({ error: "Stream failed" });
-    }
-});
-
-// =======================
-// SESSION DEBUG
-// =======================
-app.get("/session/:id", (req, res) => {
-    const session = sessions[req.params.id];
-    if (!session) return res.status(404).json({ error: "Not found" });
-
-    res.json(session);
-});
-
-app.delete("/session/:id", (req, res) => {
-    delete sessions[req.params.id];
-    res.json({ status: "deleted" });
 });
 
 // =======================

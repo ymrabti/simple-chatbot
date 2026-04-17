@@ -3,7 +3,8 @@ import { ChatService } from '../services/chat';
 import { Message } from '../models/message.model';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
-import { HttpClient, provideHttpClient } from '@angular/common/http';
+import { HttpClient } from '@angular/common/http';
+import { marked } from 'marked';
 
 @Component({
   selector: 'app-chat',
@@ -13,38 +14,90 @@ import { HttpClient, provideHttpClient } from '@angular/common/http';
   providers: [HttpClient],
 })
 export class ChatComponent implements OnInit {
-  sessionId!: string;
+  sessions: any[] = [];
+  activeSession: any;
+  streaming = false;
+  stopFlag = false;
   messages: Message[] = [];
   input = '';
   loading = false;
 
-  constructor(private chatService: ChatService) {}
+  constructor(
+    private http: HttpClient,
+  ) {}
 
-  ngOnInit(): void {
-    this.chatService.createSession().subscribe((res) => {
-      this.sessionId = res.sessionId;
+  async send() {
+    if (!this.input.trim() || !this.activeSession) return;
+
+    const msg = this.input;
+    this.input = '';
+
+    this.messages.push({ role: 'user', content: msg });
+
+    const assistant: Message = { role: 'assistant', content: '' };
+    this.messages.push(assistant);
+
+    this.streaming = true;
+    this.stopFlag = false;
+
+    const res = await fetch('http://localhost:3000/chat-stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionId: this.activeSession._id,
+        message: msg,
+      }),
+    });
+
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+
+    while (true) {
+      if (this.stopFlag) {
+        reader.cancel();
+        break;
+      }
+
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      assistant.content += decoder.decode(value);
+    }
+
+    this.streaming = false;
+  }
+
+  stop() {
+    this.stopFlag = true;
+    this.streaming = false;
+  }
+
+  ngOnInit() {
+    /* fetch('http://localhost:3000/session', { method: 'POST' })
+      .then((r) => r.json())
+      .then((data) => (this.sessionId = data.sessionId)); */
+    this.loadSessions();
+  }
+
+  loadSessions() {
+    this.http
+      .get<any[]>('http://localhost:3000/sessions')
+      .subscribe((res) => (this.sessions = res));
+  }
+
+  createSession() {
+    this.http.post('http://localhost:3000/session', {}).subscribe((s: any) => {
+      this.sessions.unshift(s);
+      this.selectSession(s);
     });
   }
 
-  send() {
-    if (!this.input.trim()) return;
+  selectSession(session: any) {
+    this.activeSession = session;
+    this.messages = session.messages || [];
+  }
 
-    const userMsg: Message = {
-      role: 'user',
-      content: this.input,
-    };
-
-    this.messages.push(userMsg);
-    this.loading = true;
-
-    this.chatService.sendMessage(this.sessionId, this.input).subscribe((res) => {
-      this.messages.push({
-        role: 'assistant',
-        content: res.response,
-      });
-      this.loading = false;
-    });
-
-    this.input = '';
+  renderMarkdown(text: string) {
+    return marked.parse(text || '');
   }
 }

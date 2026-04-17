@@ -1,22 +1,39 @@
-<div class="chat-container">
+<div class="layout">
 
-  <div class="messages">
-    <div *ngFor="let msg of messages" 
-         [ngClass]="msg.role === 'user' ? 'user' : 'assistant'">
-      {{ msg.content }}
-    </div>
+  <!-- SIDEBAR -->
+  <div class="sidebar">
+    <button (click)="createSession()">+ New Chat</button>
 
-    <div *ngIf="loading" class="assistant">
-      typing...
+    <div *ngFor="let s of sessions"
+         (click)="selectSession(s)"
+         class="session">
+      {{ s.title }}
     </div>
   </div>
 
-  <div class="input-box">
-    <input [(ngModel)]="input" 
-           (keyup.enter)="send()" 
-           placeholder="Type a message..." />
+  <!-- CHAT -->
+  <div class="chat">
 
-    <button (click)="send()">Send</button>
+    <div class="messages">
+      <div *ngFor="let m of messages"
+           [class.user]="m.role==='user'"
+           [class.bot]="m.role==='assistant'">
+
+        <div [innerHTML]="renderMarkdown(m.content)"></div>
+      </div>
+
+      <div *ngIf="streaming" class="typing">
+        assistant is typing...
+      </div>
+    </div>
+
+    <div class="input">
+      <input [(ngModel)]="input"
+             (keyup.enter)="send()" />
+
+      <button (click)="send()">Send</button>
+      <button *ngIf="streaming" (click)="stop()">Stop</button>
+    </div>
+
   </div>
-
 </div>
